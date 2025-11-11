@@ -1,9 +1,18 @@
+import "codemirror/lib/codemirror.css";
+import "codemirror/theme/solarized.css";
+import "codemirror/mode/sql/sql";
+import "codemirror/mode/javascript/javascript";
+import "codemirror/mode/python/python";
+
+import CodeMirror from "codemirror";
+import { Controlled as ControlledEditor } from "react-codemirror2";
 import { isEqual, extend, map, sortBy, findIndex, filter, pick, omit } from "lodash";
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import PropTypes from "prop-types";
 import Modal from "antd/lib/modal";
 import Select from "antd/lib/select";
 import Input from "antd/lib/input";
+import Button from "antd/lib/button";
 import { wrap as wrapDialog, DialogPropType } from "@/components/DialogWrapper";
 import Filters, { filterData } from "@/components/Filters";
 import notification from "@/services/notification";
@@ -18,11 +27,13 @@ import {
   VisualizationType,
 } from "@redash/viz/lib";
 import { Renderer, Editor } from "@/components/visualizations/visualizationComponents";
-
+import { safeEvalPreprocessor } from "@redash/viz/lib";
 import "./EditVisualizationDialog.less";
 
+window.CodeMirror = CodeMirror;
+
 function updateQueryVisualizations(query, visualization) {
-  const index = findIndex(query.visualizations, v => v.id === visualization.id);
+  const index = findIndex(query.visualizations, (v) => v.id === visualization.id);
   if (index > -1) {
     query.visualizations[index] = visualization;
   } else {
@@ -40,11 +51,11 @@ function saveVisualization(visualization) {
   }
 
   return Visualization.save(visualization)
-    .then(result => {
+    .then((result) => {
       notification.success("Visualization saved");
       return result;
     })
-    .catch(error => {
+    .catch((error) => {
       notification.error("Visualization could not be saved");
       return Promise.reject(error);
     });
@@ -61,51 +72,91 @@ function confirmDialogClose(isDirty) {
         onOk: () => resolve(),
         onCancel: () => reject(),
       });
-    } else {
-      resolve();
-    }
+    } else resolve();
   });
 }
 
 function EditVisualizationDialog({ dialog, visualization, query, queryResult }) {
   const errorHandlerRef = useRef();
-
   const isNew = !visualization;
+  const rawData = useQueryResultData(queryResult);
+  const [filters, setFilters] = useState(rawData.filters);
 
-  const data = useQueryResultData(queryResult);
-  const [filters, setFilters] = useState(data.filters);
+  const [processedData, setProcessedData] = useState(rawData);
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  const filteredData = useMemo(
-    () => ({
-      columns: data.columns,
-      rows: filterData(data.rows, filters),
-    }),
-    [data, filters]
-  );
-
+  // 1️⃣ Initial Options (Bootstrap)
   const defaultState = useMemo(() => {
     const config = visualization ? registeredVisualizations[visualization.type] : getDefaultVisualization();
-    const options = config.getOptions(isNew ? {} : visualization.options, data);
+
+    const initialOptions = config.getOptions(isNew ? {} : visualization.options, rawData);
     return {
       type: config.type,
       name: isNew ? config.name : visualization.name,
-      options,
-      originalOptions: options,
+      options: initialOptions,
+      originalOptions: initialOptions,
     };
-  }, [data, isNew, visualization]);
+  }, [rawData, isNew, visualization]);
 
   const [type, setType] = useState(defaultState.type);
   const [name, setName] = useState(defaultState.name);
   const [nameChanged, setNameChanged] = useState(false);
   const [options, setOptions] = useState(defaultState.options);
-
   const [saveInProgress, setSaveInProgress] = useState(false);
 
+  const handleApplyPreprocessor = () => {
+    const newOptions = { ...options, preProcessorCode };
+    onOptionsChanged(newOptions);
+  };
+
+  // 2️⃣ Run Preprocessor Whenever Options or Raw Data Change
   useEffect(() => {
-    if (errorHandlerRef.current) {
-      errorHandlerRef.current.reset();
+    let cancelled = false;
+
+    async function processData() {
+      setIsProcessing(true);
+      try {
+        const preCode = options?.preProcessorCode;
+        const result = await safeEvalPreprocessor(preCode, rawData);
+        if (!cancelled) setProcessedData(result || rawData);
+      } catch (err) {
+        console.error("Error running preprocessor:", err);
+        if (!cancelled) setProcessedData(rawData);
+      } finally {
+        if (!cancelled) setIsProcessing(false);
+      }
     }
-  }, [data, options]);
+
+    processData();
+    return () => {
+      cancelled = true;
+    };
+  }, [rawData, options]);
+
+  // 3️⃣ Always Refresh Options When Processed Data Updates
+  useEffect(() => {
+    if (isProcessing) return;
+    const config = registeredVisualizations[type];
+    if (!config || typeof config.getOptions !== "function") return;
+
+    const updatedOptions = config.getOptions(isNew ? {} : options, processedData);
+    if (!isEqual(updatedOptions, options)) setOptions(updatedOptions);
+  }, [processedData, type, isProcessing, isNew, options]);
+
+  useEffect(() => {
+    if (errorHandlerRef.current) errorHandlerRef.current.reset();
+  }, [processedData, options]);
+
+  const [preProcessorCode, setPreProcessorCode] = useState(
+    options?.preProcessorCode || "function preprocess(data) { return data; }"
+  );
+
+  useEffect(() => {
+    if (options?.preProcessorCode !== preProcessorCode) {
+      setPreProcessorCode(options?.preProcessorCode || "function preprocess(data) { return data; }");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options?.preProcessorCode]);
 
   function onTypeChanged(newType) {
     setType(newType);
@@ -115,7 +166,7 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
       setName(config.name);
     }
 
-    setOptions(config.getOptions(isNew ? {} : visualization.options, data));
+    setOptions(config.getOptions(isNew ? {} : visualization.options, processedData));
   }
 
   function onNameChanged(newName) {
@@ -125,7 +176,7 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
 
   function onOptionsChanged(newOptions) {
     const config = registeredVisualizations[type];
-    setOptions(config.getOptions(newOptions, data));
+    setOptions(config.getOptions(newOptions, processedData));
   }
 
   function save() {
@@ -140,7 +191,7 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
       options: visualizationOptions,
       query_id: query.id,
     });
-    saveVisualization(visualizationData).then(savedVisualization => {
+    saveVisualization(visualizationData).then((savedVisualization) => {
       updateQueryVisualizations(query, savedVisualization);
       dialog.close(savedVisualization);
     });
@@ -156,11 +207,20 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
   // When editing existing visualization chart type selector is disabled, so add only existing visualization's
   // descriptor there (to properly render the component). For new visualizations show all types except of deprecated
   const availableVisualizations = isNew
-    ? filter(sortBy(registeredVisualizations, ["name"]), vis => !vis.isDeprecated)
+    ? filter(sortBy(registeredVisualizations, ["name"]), (vis) => !vis.isDeprecated)
     : pick(registeredVisualizations, [type]);
 
   const vizTypeId = useUniqueId("visualization-type");
   const vizNameId = useUniqueId("visualization-name");
+  const preProcessorId = useUniqueId("preprocessor");
+
+  const filteredData = useMemo(
+    () => ({
+      columns: processedData.columns,
+      rows: filterData(processedData.rows, filters),
+    }),
+    [processedData, filters]
+  );
 
   return (
     <Modal
@@ -186,7 +246,7 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
               disabled={!isNew}
               value={type}
               onChange={onTypeChanged}>
-              {map(availableVisualizations, vis => (
+              {map(availableVisualizations, (vis) => (
                 <Select.Option key={vis.type} data-test={"VisualizationType." + vis.type}>
                   {vis.name}
                 </Select.Option>
@@ -200,13 +260,44 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
               id={vizNameId}
               className="w-100"
               value={name}
-              onChange={event => onNameChanged(event.target.value)}
+              onChange={(event) => onNameChanged(event.target.value)}
             />
+
+            <div className="m-b-15">
+              <label htmlFor={preProcessorId}>Data Pre-Processor (JS)</label>
+              <p className="text-muted">
+                Optional JavaScript function to modify <code>data</code> before rendering.
+                <br />
+                Define: <code>function preprocess(data)</code> and return modified data.
+              </p>
+
+              <ControlledEditor
+                id={preProcessorId}
+                value={preProcessorCode}
+                options={{
+                  mode: "javascript",
+                  lineNumbers: true,
+                  theme: "default",
+                }}
+                onBeforeChange={(editor, data, value) => setPreProcessorCode(value)}
+              />
+
+              <div style={{ marginTop: 8, textAlign: "right" }}>
+                <Button
+                  type="primary"
+                  size="small"
+                  onClick={handleApplyPreprocessor}
+                  disabled={preProcessorCode === options.preProcessorCode || isProcessing}>
+                  Apply Preprocessor
+                </Button>
+              </div>
+            </div>
           </div>
+
           <div data-test="VisualizationEditor">
             <Editor
               type={type}
-              data={data}
+              data={processedData}
               options={options}
               visualizationName={name}
               onOptionsChange={onOptionsChanged}
@@ -219,13 +310,17 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
           </label>
           <Filters filters={filters} onChange={setFilters} />
           <div className="scrollbox" data-test="VisualizationPreview">
-            <Renderer
-              type={type}
-              data={filteredData}
-              options={options}
-              visualizationName={name}
-              onOptionsChange={onOptionsChanged}
-            />
+            {isProcessing ? (
+              <div className="p-3 text-muted">Processing data...</div>
+            ) : (
+              <Renderer
+                type={type}
+                data={filteredData}
+                options={options}
+                visualizationName={name}
+                onOptionsChange={onOptionsChanged}
+              />
+            )}
           </div>
         </div>
       </div>

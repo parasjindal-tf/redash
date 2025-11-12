@@ -12,11 +12,15 @@ function safeClone<T>(obj: T): T {
   } catch {
     // Fallback: shallow copy instead of crash
     if (Array.isArray(obj)) {
-      return obj.map((o) => (typeof o === "object" ? { ...o } : o)) as unknown as T;
+      return (obj as unknown[]).map((o: unknown) =>
+        typeof o === "object" && o !== null ? { ...(o as object) } : o
+      ) as unknown as T;
     }
+
     if (typeof obj === "object" && obj !== null) {
-      return { ...obj } as T;
+      return { ...(obj as unknown as object) } as T;
     }
+
     return obj;
   }
 }

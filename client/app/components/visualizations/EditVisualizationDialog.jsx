@@ -139,9 +139,9 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
     const config = registeredVisualizations[type];
     if (!config || typeof config.getOptions !== "function") return;
 
-    const updatedOptions = config.getOptions(isNew ? {} : options, processedData);
+    const updatedOptions = config.getOptions(options, processedData);
     if (!isEqual(updatedOptions, options)) setOptions(updatedOptions);
-  }, [processedData, type, isProcessing, isNew, options]);
+  }, [processedData, type, isProcessing, options]);
 
   useEffect(() => {
     if (errorHandlerRef.current) errorHandlerRef.current.reset();

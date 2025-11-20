@@ -104,11 +104,6 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
   const [options, setOptions] = useState(defaultState.options);
   const [saveInProgress, setSaveInProgress] = useState(false);
 
-  const handleApplyPreprocessor = () => {
-    const newOptions = { ...options, preProcessorCode };
-    onOptionsChanged(newOptions);
-  };
-
   // 2️⃣ Run Preprocessor Whenever Options or Raw Data Change
   useEffect(() => {
     let cancelled = false;
@@ -131,7 +126,7 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
     return () => {
       cancelled = true;
     };
-  }, [rawData, options]);
+  }, [rawData, options?.preProcessorCode]);
 
   // 3️⃣ Always Refresh Options When Processed Data Updates
   useEffect(() => {
@@ -179,6 +174,12 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
     setOptions(config.getOptions(newOptions, processedData));
   }
 
+  const handleApplyPreprocessor = () => {
+    const newOptions = { ...options, preProcessorCode };
+    const config = registeredVisualizations[type];
+    setOptions(config.getOptions(newOptions, rawData));
+  };
+
   function save() {
     setSaveInProgress(true);
     let visualizationOptions = options;
@@ -216,10 +217,10 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
 
   const filteredData = useMemo(
     () => ({
-      columns: processedData.columns,
-      rows: filterData(processedData.rows, filters),
+      columns: rawData.columns,
+      rows: filterData(rawData.rows, filters),
     }),
-    [processedData, filters]
+    [rawData, filters]
   );
 
   return (
@@ -297,7 +298,7 @@ function EditVisualizationDialog({ dialog, visualization, query, queryResult }) 
           <div data-test="VisualizationEditor">
             <Editor
               type={type}
-              data={processedData}
+              data={rawData}
               options={options}
               visualizationName={name}
               onOptionsChange={onOptionsChanged}
